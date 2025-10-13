@@ -36,13 +36,6 @@ class KeyAuthentication {
     const std::string secret;
 };
 
-enum class KeyType {
-    DE_SYS,
-    DE_USER,
-    CE_USER,
-    ME,
-};
-
 extern const KeyAuthentication kEmptyAuthentication;
 
 bool createSecdiscardable(const std::string& path, std::string* hash);
@@ -69,11 +62,6 @@ bool retrieveKey(const std::string& dir, const KeyAuthentication& auth, KeyBuffe
 bool destroyKey(const std::string& dir);
 
 bool runSecdiscardSingle(const std::string& file);
-
-// Generate wrapped storage key using keystore. Uses STORAGE_KEY tag in keystore.
-bool generateWrappedStorageKey(KeyBuffer* key);
-// Export the per-boot boot wrapped storage key using keystore.
-bool exportWrappedStorageKey(const KeyBuffer& ksKey, KeyBuffer* key);
 
 // Set a seed to be mixed into all key storage encryption keys.
 bool setKeyStorageBindingSeed(const std::vector<uint8_t>& seed);
