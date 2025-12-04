@@ -132,7 +132,11 @@ static KeyGeneration makeGen(const EncryptionOptions& options) {
         LOG(ERROR) << "EncryptionOptions not initialized";
         return android::vold::neverGen();
     }
-    return KeyGeneration{FSCRYPT_MAX_KEY_SIZE, true, options.use_hw_wrapped_key};
+    return KeyGeneration{FSCRYPT_MAX_KEY_SIZE, true, options.key_type};
+}
+
+static KeyGeneration userdataKeyGen() {
+    return makeGen(s_data_options);
 }
 
 static const char* escape_empty(const std::string& value) {
@@ -333,8 +337,11 @@ static bool init_data_file_encryption_options() {
         return false;
     }
     if (s_data_options.version == 1) {
-        s_data_options.use_hw_wrapped_key =
-            GetEntryForMountPoint(&fstab_default, DATA_MNT_POINT)->fs_mgr_flags.wrapped_key;
+        if (GetEntryForMountPoint(&fstab_default, DATA_MNT_POINT)->fs_mgr_flags.wrapped_key) {
+            s_data_options.key_type = KeyType::kHwWrappedV0;
+        } else {
+            s_data_options.key_type = KeyType::kRaw;
+        }
     }
     return true;
 }
@@ -345,15 +352,13 @@ static bool install_storage_key(const std::string& mountpoint, const EncryptionO
         LOG(ERROR) << "EncryptionOptions not initialized";
         return false;
     }
-    KeyBuffer ephemeral_wrapped_key;
-    if (options.use_hw_wrapped_key) {
-        if (!exportWrappedStorageKey(key, &ephemeral_wrapped_key)) {
-            LOG(ERROR) << "Failed to get ephemeral wrapped key";
-            return false;
-        }
-    }
-    return installKey(mountpoint, options, options.use_hw_wrapped_key ? ephemeral_wrapped_key : key,
-                      policy);
+    KeyBuffer kernel_key;
+    if (!prepareKeyForUse(key, options.key_type, &kernel_key)) return false;
+    return installKey(mountpoint, options, kernel_key, policy);
+}
+
+static bool install_userdata_key(const KeyBuffer& key, EncryptionPolicy* policy) {
+    return install_storage_key(DATA_MNT_POINT, s_data_options, key, policy);
 }
 
 // Retrieve the options to use for encryption policies on adoptable storage.
@@ -460,12 +465,12 @@ static bool ce_key_exists(userid_t user_id) {
 
 static bool create_de_key(userid_t user_id, bool ephemeral) {
     KeyBuffer de_key;
-    if (!generateStorageKey(makeGen(s_data_options), &de_key)) return false;
+    if (!generateStorageKey(userdataKeyGen(), &de_key)) return false;
     if (!ephemeral && !android::vold::storeKeyAtomically(get_de_key_path(user_id), user_key_temp,
                                                          kEmptyAuthentication, de_key))
         return false;
     EncryptionPolicy de_policy;
-    if (!install_storage_key(DATA_MNT_POINT, s_data_options, de_key, &de_policy)) return false;
+    if (!install_userdata_key(de_key, &de_policy)) return false;
     s_de_policies[user_id].internal = de_policy;
     LOG(INFO) << "Created DE key for user " << user_id;
     return true;
@@ -473,7 +478,7 @@ static bool create_de_key(userid_t user_id, bool ephemeral) {
 
 static bool create_ce_key(userid_t user_id, bool ephemeral) {
     KeyBuffer ce_key;
-    if (!generateStorageKey(makeGen(s_data_options), &ce_key)) return false;
+    if (!generateStorageKey(userdataKeyGen(), &ce_key)) return false;
     if (!ephemeral) {
         if (!prepare_dir(get_ce_key_directory_path(user_id), 0700, AID_ROOT, AID_ROOT))
             return false;
@@ -483,7 +488,7 @@ static bool create_ce_key(userid_t user_id, bool ephemeral) {
         s_new_ce_keys.insert({user_id, ce_key});
     }
     EncryptionPolicy ce_policy;
-    if (!install_storage_key(DATA_MNT_POINT, s_data_options, ce_key, &ce_policy)) return false;
+    if (!install_userdata_key(ce_key, &ce_policy)) return false;
     s_ce_policies[user_id].internal = ce_policy;
     LOG(INFO) << "Created CE key for user " << user_id;
     return true;
@@ -527,7 +532,7 @@ static bool load_all_de_keys() {
             return false;
         }
         EncryptionPolicy de_policy;
-        if (!install_storage_key(DATA_MNT_POINT, s_data_options, de_key, &de_policy)) return false;
+        if (!install_userdata_key(de_key, &de_policy)) return false;
         const auto& [existing, is_new] = s_de_policies.insert({user_id, {de_policy, {}}});
         if (!is_new && existing->second.internal != de_policy) {
             LOG(ERROR) << "DE policy for user" << user_id << " changed";
@@ -547,13 +552,12 @@ bool fscrypt_initialize_systemwide_keys() {
 
     KeyBuffer device_key;
     if (!retrieveOrGenerateKey(device_key_path, device_key_temp, kEmptyAuthentication,
-                               makeGen(s_data_options), &device_key))
+                               userdataKeyGen(), &device_key))
         return false;
 
     // This initializes s_device_policy, which is a global variable so that
     // fscrypt_init_user0() can access it later.
-    if (!install_storage_key(DATA_MNT_POINT, s_data_options, device_key, &s_device_policy))
-        return false;
+    if (!install_userdata_key(device_key, &s_device_policy)) return false;
 
     std::string options_string;
     if (!OptionsToString(s_device_policy.options, &options_string)) {
@@ -568,10 +572,9 @@ bool fscrypt_initialize_systemwide_keys() {
     LOG(INFO) << "Wrote system DE key reference to:" << ref_filename;
 
     KeyBuffer per_boot_key;
-    if (!generateStorageKey(makeGen(s_data_options), &per_boot_key)) return false;
+    if (!generateStorageKey(userdataKeyGen(), &per_boot_key)) return false;
     EncryptionPolicy per_boot_policy;
-    if (!install_storage_key(DATA_MNT_POINT, s_data_options, per_boot_key, &per_boot_policy))
-        return false;
+    if (!install_userdata_key(per_boot_key, &per_boot_policy)) return false;
     std::string per_boot_ref_filename = std::string("/data") + fscrypt_key_per_boot_ref;
     if (!android::vold::writeStringToFile(per_boot_policy.key_raw_ref, per_boot_ref_filename))
         return false;
@@ -904,7 +907,7 @@ bool fscrypt_unlock_ce_storage(userid_t user_id, const std::vector<uint8_t>& sec
     KeyBuffer ce_key;
     if (!read_and_fixate_user_ce_key(user_id, auth, &ce_key)) return false;
     EncryptionPolicy ce_policy;
-    if (!install_storage_key(DATA_MNT_POINT, s_data_options, ce_key, &ce_policy)) return false;
+    if (!install_userdata_key(ce_key, &ce_policy)) return false;
     s_ce_policies[user_id].internal = ce_policy;
     LOG(DEBUG) << "Installed CE key for user " << user_id;
     return true;

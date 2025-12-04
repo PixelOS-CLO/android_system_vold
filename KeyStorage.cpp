@@ -48,7 +48,6 @@ namespace vold {
 
 const KeyAuthentication kEmptyAuthentication{""};
 
-static constexpr size_t AES_KEY_BYTES = 32;
 static constexpr size_t GCM_NONCE_BYTES = 12;
 static constexpr size_t GCM_MAC_BYTES = 16;
 static constexpr size_t SECDISCARDABLE_BYTES = 1 << 14;
@@ -133,52 +132,6 @@ static bool generateKeyStorageKey(Keystore& keystore, const std::string& appId, 
                         "non-rollback-resistant key.";
         if (!keystore.generateKey(paramBuilder, key)) return false;
     }
-    return true;
-}
-
-bool generateWrappedStorageKey(KeyBuffer* key) {
-    Keystore keystore;
-    if (!keystore) return false;
-    std::string key_temp;
-    auto paramBuilder = km::AuthorizationSetBuilder().AesEncryptionKey(AES_KEY_BYTES * 8)
-        .Authorization(km::TAG_STORAGE_KEY);
-
-    km::KeyParameter param1;
-    param1.tag = (km::Tag) (KM_TAG_FBE_ICE);
-    param1.value = km::KeyParameterValue::make<km::KeyParameterValue::boolValue>(true);
-    paramBuilder.push_back(param1);
-
-    if (!keystore.generateKey(paramBuilder, &key_temp)) return false;
-    *key = KeyBuffer(key_temp.size());
-    memcpy(reinterpret_cast<void*>(key->data()), key_temp.c_str(), key->size());
-    return true;
-}
-
-bool exportWrappedStorageKey(const KeyBuffer& kmKey, KeyBuffer* key) {
-    Keystore keystore;
-    if (!keystore) return false;
-    std::string key_temp;
-
-    auto ret = keystore.exportKey(kmKey, &key_temp);
-    if (ret != km::ErrorCode::OK) {
-        if (ret == km::ErrorCode::KEY_REQUIRES_UPGRADE) {
-           // TODO(b/187304488): Re-land the below logic. (keystore.upgradeKey() was removed)
-           return false;
-           /*
-           std::string kmKeyStr(reinterpret_cast<const char*>(kmKey.data()), kmKey.size());
-           std::string Keystr;
-           if (!keystore.upgradeKey(kmKeyStr, km::AuthorizationSet(), &Keystr)) return false;
-           KeyBuffer upgradedKey = KeyBuffer(Keystr.size());
-           memcpy(reinterpret_cast<void*>(upgradedKey.data()), Keystr.c_str(), upgradedKey.size());
-           ret = keystore.exportKey(upgradedKey, &key_temp);
-           if (ret != km::ErrorCode::OK) return false;
-           */
-        } else {
-           return false;
-        }
-    }
-    *key = KeyBuffer(key_temp.size());
-    memcpy(reinterpret_cast<void*>(key->data()), key_temp.c_str(), key->size());
     return true;
 }
 

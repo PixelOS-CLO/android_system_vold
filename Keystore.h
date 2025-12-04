@@ -36,6 +36,8 @@ namespace vold {
 namespace ks2 = ::aidl::android::system::keystore2;
 namespace km = ::aidl::android::hardware::security::keymint;
 
+constexpr size_t AES_KEY_BYTES = 32;
+
 // C++ wrappers to the Keystore2 AIDL interface.
 // This is tailored to the needs of KeyStorage, but could be extended to be
 // a more general interface.
@@ -113,7 +115,7 @@ class Keystore {
     // Generate a key using keystore2 from the given params.
     bool generateKey(const km::AuthorizationSet& inParams, std::string* key);
     // Exports a keystore2 key with STORAGE_KEY tag wrapped with a per-boot ephemeral key
-    km::ErrorCode exportKey(const KeyBuffer& ksKey, std::string* key);
+    bool exportKey(const KeyBuffer& ksKey, std::string* key);
     // If supported, permanently delete a key from the keymint device it belongs to.
     bool deleteKey(const std::string& key);
     // Begin a new cryptographic operation, collecting output parameters if pointer is non-null
